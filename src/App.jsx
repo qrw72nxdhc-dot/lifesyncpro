@@ -3,8 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   "https://xyvjnqufsnffosqigbup.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh5dmpucXVmc25mZm9zcWlnYnVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEwNzI5MjMsImV4cCI6MjA1NjY0ODkyM30.FfbzMCWsNDCsFkWsZ3EeO4r3amhFXhYKFbHKiHBDFqY"
-);
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh5dmpucXVmc25mZm9zcWlnYnVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MDQ3ODYsImV4cCI6MjA4ODI4MDc4Nn0.reDgQw2sJvvodtR3AK7QB3H1aVi_bZJXNRh9RgEqlPE"
 
 const CATEGORIES = {
   work:     { label: "Work" },
