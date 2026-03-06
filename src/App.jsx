@@ -124,58 +124,105 @@ function useIsMobile(){
 // ── AUTH PAGE ─────────────────────────────────────────────────────────────────
 function AuthPage({onAuth}){
   const[mode,setMode]=useState("login");
-  const[email,setEmail]=useState("");const[password,setPassword]=useState("");
-  const[loading,setLoading]=useState(false);const[error,setError]=useState("");
+  const[email,setEmail]=useState("");
+  const[password,setPassword]=useState("");
+  const[confirmPassword,setConfirmPassword]=useState("");
+  const[loading,setLoading]=useState(false);
+  const[error,setError]=useState("");
+  const[successMsg,setSuccessMsg]=useState("");
+
+  const passwordLongEnough=password.length>=6;
+  const passwordsMatch=mode==="login"||(password===confirmPassword);
+  const canSubmit=email&&password&&passwordLongEnough&&(mode==="login"||(confirmPassword&&passwordsMatch));
 
   const handle=async()=>{
-    setLoading(true);setError("");
+    if(!canSubmit)return;
+    setLoading(true);setError("");setSuccessMsg("");
     try{
-      let res;
       if(mode==="signup"){
-        res=await supabase.auth.signUp({email,password});
+        const res=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});
         if(res.error)throw res.error;
-        if(res.data.user&&!res.data.session){setError("Check your email to confirm your account, then sign in.");setLoading(false);return;}
-      }else{res=await supabase.auth.signInWithPassword({email,password});if(res.error)throw res.error;}
-      onAuth(res.data.user);
-    }catch(e){setError(e.message||"Something went wrong");}
+        if(res.data.session){
+          // Email confirmation disabled — go straight in
+          onAuth(res.data.user);return;
+        }
+        // Email confirmation required
+        setSuccessMsg("Account created! Check your email for a confirmation link, then sign in.");
+        setMode("login");setPassword("");setConfirmPassword("");
+      }else{
+        const res=await supabase.auth.signInWithPassword({email,password});
+        if(res.error)throw res.error;
+        onAuth(res.data.user);
+      }
+    }catch(e){
+      const msg=e.message||"Something went wrong";
+      if(msg.includes("Invalid login"))setError("Incorrect email or password. Please try again.");
+      else if(msg.includes("already registered"))setError("An account with this email already exists. Try signing in instead.");
+      else if(msg.includes("Email not confirmed"))setError("Please confirm your email first — check your inbox for a link from us.");
+      else setError(msg);
+    }
     setLoading(false);
   };
 
   const handleGoogle=async()=>{setLoading(true);await supabase.auth.signInWithOAuth({provider:"google",options:{redirectTo:window.location.origin}});};
 
+  const inp={width:"100%",background:"#252525",border:"1px solid #3A3A3A",borderRadius:"6px",padding:"11px 13px",color:"#F8F5F0",fontSize:"14px",outline:"none",fontFamily:"'Jost',sans-serif"};
+  const lbl={display:"block",fontSize:"10px",color:"#7C7C7C",marginBottom:"6px",letterSpacing:"0.1em"};
+
   return(
     <div style={{minHeight:"100vh",background:"#1A1A1A",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",fontFamily:"'Jost',sans-serif"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Jost:wght@300;400;500;600&display=swap');*{box-sizing:border-box;}input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}`}</style>
       <div style={{width:"100%",maxWidth:"400px"}}>
-        <div style={{marginBottom:"40px"}}>
+        <div style={{marginBottom:"36px"}}>
           <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"48px",fontWeight:300,color:"#F8F5F0",letterSpacing:"0.04em",lineHeight:1,marginBottom:"6px"}}>LifeSync</h1>
           <p style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"16px",fontStyle:"italic",color:"#7C7C7C",fontWeight:300}}>Your life, intelligently organised.</p>
         </div>
-        <div style={{display:"flex",background:"#252525",borderRadius:"8px",padding:"3px",marginBottom:"28px"}}>
+
+        <div style={{display:"flex",background:"#252525",borderRadius:"8px",padding:"3px",marginBottom:"24px"}}>
           {[["login","Sign In"],["signup","Create Account"]].map(([m,l])=>(
-            <button key={m} onClick={()=>{setMode(m);setError("");}} style={{flex:1,padding:"10px",background:mode===m?"#F8F5F0":"transparent",border:"none",borderRadius:"6px",color:mode===m?"#1A1A1A":"#7C7C7C",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontWeight:mode===m?500:400,letterSpacing:"0.06em"}}>{l}</button>
+            <button key={m} onClick={()=>{setMode(m);setError("");setSuccessMsg("");setConfirmPassword("");}} style={{flex:1,padding:"10px",background:mode===m?"#F8F5F0":"transparent",border:"none",borderRadius:"6px",color:mode===m?"#1A1A1A":"#7C7C7C",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontWeight:mode===m?500:400,letterSpacing:"0.06em"}}>{l}</button>
           ))}
         </div>
-        <button onClick={handleGoogle} disabled={loading} style={{width:"100%",padding:"13px",background:"transparent",border:"1px solid #3A3A3A",borderRadius:"8px",color:"#F8F5F0",fontSize:"13px",cursor:"pointer",fontFamily:"'Jost',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:"10px",marginBottom:"20px"}}
+
+        <button onClick={handleGoogle} disabled={loading} style={{width:"100%",padding:"13px",background:"transparent",border:"1px solid #3A3A3A",borderRadius:"8px",color:"#F8F5F0",fontSize:"13px",cursor:"pointer",fontFamily:"'Jost',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:"10px",marginBottom:"18px",transition:"border-color 0.2s"}}
           onMouseEnter={e=>e.currentTarget.style.borderColor="#7A9E7E"} onMouseLeave={e=>e.currentTarget.style.borderColor="#3A3A3A"}>
           <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
           Continue with Google
         </button>
-        <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"20px"}}>
+
+        <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"18px"}}>
           <div style={{flex:1,height:"1px",background:"#2A2A2A"}}/><span style={{fontSize:"11px",color:"#4A4A4A",letterSpacing:"0.08em"}}>OR</span><div style={{flex:1,height:"1px",background:"#2A2A2A"}}/>
         </div>
-        <div style={{marginBottom:"14px"}}>
-          <label style={{display:"block",fontSize:"10px",color:"#7C7C7C",marginBottom:"6px",letterSpacing:"0.1em"}}>EMAIL</label>
-          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com" onKeyDown={e=>e.key==="Enter"&&handle()}
-            style={{width:"100%",background:"#252525",border:"1px solid #3A3A3A",borderRadius:"6px",padding:"11px 13px",color:"#F8F5F0",fontSize:"14px",outline:"none",fontFamily:"'Jost',sans-serif"}}/>
+
+        {successMsg&&<div style={{background:"rgba(122,158,126,0.1)",border:"1px solid rgba(122,158,126,0.4)",borderRadius:"6px",padding:"12px 14px",fontSize:"13px",color:"#7A9E7E",marginBottom:"16px",lineHeight:1.6}}>✓ {successMsg}</div>}
+
+        <div style={{marginBottom:"13px"}}>
+          <label style={lbl}>EMAIL</label>
+          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com" onKeyDown={e=>e.key==="Enter"&&mode==="login"&&handle()} style={inp}/>
         </div>
-        <div style={{marginBottom:"20px"}}>
-          <label style={{display:"block",fontSize:"10px",color:"#7C7C7C",marginBottom:"6px",letterSpacing:"0.1em"}}>PASSWORD</label>
-          <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••" onKeyDown={e=>e.key==="Enter"&&handle()}
-            style={{width:"100%",background:"#252525",border:"1px solid #3A3A3A",borderRadius:"6px",padding:"11px 13px",color:"#F8F5F0",fontSize:"14px",outline:"none",fontFamily:"'Jost',sans-serif"}}/>
+
+        <div style={{marginBottom:"13px"}}>
+          <label style={lbl}>PASSWORD</label>
+          <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="At least 6 characters" onKeyDown={e=>e.key==="Enter"&&mode==="login"&&handle()}
+            style={{...inp,borderColor:password&&!passwordLongEnough?"#E8A0A0":"#3A3A3A"}}/>
+          {password&&!passwordLongEnough&&<p style={{fontSize:"11px",color:"#E8A0A0",marginTop:"5px",marginBottom:0}}>Must be at least 6 characters.</p>}
         </div>
+
+        {mode==="signup"&&(
+          <div style={{marginBottom:"18px"}}>
+            <label style={lbl}>CONFIRM PASSWORD</label>
+            <input value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} type="password" placeholder="Re-enter your password" onKeyDown={e=>e.key==="Enter"&&handle()}
+              style={{...inp,borderColor:confirmPassword&&!passwordsMatch?"#E8A0A0":confirmPassword&&passwordsMatch?"#7A9E7E":"#3A3A3A"}}/>
+            {confirmPassword&&!passwordsMatch&&<p style={{fontSize:"11px",color:"#E8A0A0",marginTop:"5px",marginBottom:0}}>Passwords don't match.</p>}
+            {confirmPassword&&passwordsMatch&&passwordLongEnough&&<p style={{fontSize:"11px",color:"#7A9E7E",marginTop:"5px",marginBottom:0}}>✓ Passwords match.</p>}
+          </div>
+        )}
+
+        {!mode==="signup"&&<div style={{marginBottom:"18px"}}/>}
+
         {error&&<div style={{background:"rgba(232,160,160,0.1)",border:"1px solid rgba(232,160,160,0.3)",borderRadius:"6px",padding:"10px 13px",fontSize:"12px",color:"#E8A0A0",marginBottom:"14px",lineHeight:1.5}}>{error}</div>}
-        <button onClick={handle} disabled={loading||!email||!password} style={{width:"100%",padding:"14px",background:email&&password?"#F8F5F0":"#2A2A2A",border:"none",borderRadius:"8px",color:email&&password?"#1A1A1A":"#3A3A3A",fontSize:"12px",fontWeight:500,cursor:email&&password?"pointer":"not-allowed",letterSpacing:"0.1em",fontFamily:"'Jost',sans-serif"}}>
+
+        <button onClick={handle} disabled={loading||!canSubmit} style={{width:"100%",padding:"14px",background:canSubmit?"#F8F5F0":"#252525",border:"none",borderRadius:"8px",color:canSubmit?"#1A1A1A":"#4A4A4A",fontSize:"12px",fontWeight:500,cursor:canSubmit?"pointer":"not-allowed",letterSpacing:"0.1em",fontFamily:"'Jost',sans-serif",transition:"all 0.2s",marginTop:"4px"}}>
           {loading?"LOADING...":(mode==="login"?"SIGN IN":"CREATE ACCOUNT")}
         </button>
       </div>
