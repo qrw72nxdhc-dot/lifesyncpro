@@ -401,12 +401,19 @@ function SetupPage({onComplete}) {
   );
 }
 
+// ── localStorage helpers ───────────────────────────────────────────────────────
+const LS = {
+  get: (key, fallback) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } },
+  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
+  clear: () => { try { ["ls_setup","ls_userData","ls_blocks","ls_debits","ls_banner"].forEach(k=>localStorage.removeItem(k)); } catch {} },
+};
+
 // ── MAIN APP ───────────────────────────────────────────────────────────────────
 export default function App() {
-  const [setup,setSetup] = useState(false);
-  const [userData,setUserData] = useState(null);
-  const [blocks,setBlocks] = useState([]);
-  const [debits,setDebits] = useState([]);
+  const [setup,setSetup] = useState(()=>LS.get("ls_setup", false));
+  const [userData,setUserData] = useState(()=>LS.get("ls_userData", null));
+  const [blocks,setBlocks] = useState(()=>LS.get("ls_blocks", []));
+  const [debits,setDebits] = useState(()=>LS.get("ls_debits", []));
   const [tab,setTab] = useState("calendar");
   const [calView,setCalView] = useState("week");
   const [activeDay,setActiveDay] = useState(getTodayIndex());
@@ -419,10 +426,20 @@ export default function App() {
   const [toast,setToast] = useState(null);
   const [aiLoading,setAiLoading] = useState(false);
   const [aiAdvice,setAiAdvice] = useState(null);
-  const [showSuggestedBanner,setShowSuggestedBanner] = useState(false);
+  const [showSuggestedBanner,setShowSuggestedBanner] = useState(()=>LS.get("ls_banner", false));
+  const [showResetConfirm,setShowResetConfirm] = useState(false);
   const isMobile = useIsMobile();
 
+  // Save to localStorage whenever key state changes
+  useEffect(()=>{ LS.set("ls_setup", setup); },[setup]);
+  useEffect(()=>{ LS.set("ls_userData", userData); },[userData]);
+  useEffect(()=>{ LS.set("ls_blocks", blocks); },[blocks]);
+  useEffect(()=>{ LS.set("ls_debits", debits); },[debits]);
+  useEffect(()=>{ LS.set("ls_banner", showSuggestedBanner); },[showSuggestedBanner]);
+
   const showToast = msg => {setToast(msg);setTimeout(()=>setToast(null),3000);};
+
+  const resetApp = () => { LS.clear(); setSetup(false); setUserData(null); setBlocks([]); setDebits([]); setShowSuggestedBanner(false); setShowResetConfirm(false); };
 
   useEffect(()=>{
     if(form.autoTitle&&form.category&&form.startHour!==undefined){
@@ -650,11 +667,26 @@ export default function App() {
 
       {toast&&<div className="toast" style={{position:"fixed",top:"16px",left:"50%",transform:"translateX(-50%)",zIndex:9999,background:"#2D4A3E",borderRadius:"8px",padding:"11px 20px",fontSize:"12px",color:"#F8F5F0",letterSpacing:"0.05em",boxShadow:"0 4px 20px rgba(0,0,0,0.15)",whiteSpace:"nowrap"}}>{toast}</div>}
 
+      {/* Reset confirm modal */}
+      {showResetConfirm&&(
+        <div className="modal-bg" onClick={()=>setShowResetConfirm(false)} style={{position:"fixed",inset:0,background:"rgba(26,26,26,0.7)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:"20px"}}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()} style={{background:"#FDFCFA",borderRadius:"14px",padding:"28px",maxWidth:"320px",width:"100%",textAlign:"center",boxShadow:"0 24px 60px rgba(0,0,0,0.2)"}}>
+            <div style={{fontSize:"28px",marginBottom:"12px"}}>⚠️</div>
+            <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"22px",fontWeight:300,color:"#1A1A1A",marginBottom:"8px"}}>Reset LifeSync?</h3>
+            <p style={{fontSize:"13px",color:"#7C7C7C",lineHeight:1.6,marginBottom:"24px"}}>This will delete all your events, budget, and settings permanently.</p>
+            <div style={{display:"flex",gap:"8px"}}>
+              <button onClick={()=>setShowResetConfirm(false)} style={{flex:1,padding:"12px",background:"transparent",border:"1px solid #E8DDD0",borderRadius:"8px",color:"#7C7C7C",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",letterSpacing:"0.06em"}}>CANCEL</button>
+              <button onClick={resetApp} style={{flex:1,padding:"12px",background:"#E8A0A0",border:"none",borderRadius:"8px",color:"#fff",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontWeight:500,letterSpacing:"0.06em"}}>RESET ALL</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{background:"#1A1A1A",padding:isMobile?"12px 14px":"16px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px"}}>
         <div style={{flexShrink:0}}>
-          <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:isMobile?"17px":"20px",fontWeight:300,letterSpacing:"0.15em",color:"#F8F5F0",textTransform:"uppercase"}}>LifeSync</h1>
-          <p style={{fontSize:"9px",color:"#7C7C7C",letterSpacing:"0.06em",marginTop:"1px"}}>Good {getTimeName(new Date().getHours()).toLowerCase()}, {name.split(" ")[0]}</p>
+          <h1 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:isMobile?"17px":"20px",fontWeight:300,letterSpacing:"0.15em",color:"#F8F5F0",textTransform:"uppercase",cursor:"pointer"}} onClick={()=>setShowResetConfirm(true)} title="Tap to reset">LifeSync</h1>
+          <p style={{fontSize:"9px",color:"#7C7C7C",letterSpacing:"0.06em",marginTop:"1px"}}>Good {getTimeName(new Date().getHours()).toLowerCase()}, {name.split(" ")[0]} · <span style={{cursor:"pointer",color:"#4A4A4A"}} onClick={()=>setShowResetConfirm(true)}>reset</span></p>
         </div>
 
         {tab==="calendar"&&(
