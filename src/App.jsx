@@ -290,20 +290,24 @@ function SetupPage({onComplete,user}){
           <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"28px"}}>
             {["7","8","9","10"].map(h=>pill(data.workStart===h,()=>upd("workStart",h),fmtH(parseInt(h))))}
           </div>
-          {nextBtn(false,()=>setStep(4))}
+          {data.workDays.length===0&&<p style={{fontSize:"11px",color:"#E8A0A0",marginBottom:"12px"}}>Please select at least one work day, or choose none if you don't have set work days.</p>}
+          <div style={{display:"flex",gap:"8px"}}>
+            <button onClick={()=>upd("workDays",[])||setStep(4)} style={{flex:1,padding:"14px",background:"transparent",border:"1px solid #3A3A3A",borderRadius:"6px",color:"#7C7C7C",fontSize:"11px",cursor:"pointer",letterSpacing:"0.08em",fontFamily:"'Jost',sans-serif"}}>I DON'T HAVE SET WORK DAYS</button>
+            {nextBtn(!data.workStart,()=>setStep(4))}
+          </div>
         </div>}
         {step===4&&<div>
           <h2 style={{...h2s,fontSize:"32px"}}>Your daily rhythm.</h2>
           <p style={subs}>Helps LifeSync suggest the best times for your activities.</p>
-          <label style={ls}>WAKE UP TIME</label>
+          <label style={ls}>WAKE UP TIME <span style={{color:"#E8A0A0"}}>*</span></label>
           <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"24px"}}>
             {["5","6","7","8","9"].map(h=>pill(data.wakeHour===h,()=>upd("wakeHour",h),fmtH(parseInt(h))))}
           </div>
-          <label style={ls}>SLEEP TIME</label>
+          <label style={ls}>SLEEP TIME <span style={{color:"#E8A0A0"}}>*</span></label>
           <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"28px"}}>
             {["21","22","23","0"].map(h=>pill(data.sleepHour===h,()=>upd("sleepHour",h),fmtH(parseInt(h))))}
           </div>
-          {nextBtn(false,()=>setStep(5))}
+          {nextBtn(!data.wakeHour||!data.sleepHour,()=>setStep(5))}
         </div>}
         {step===5&&<div>
           <h2 style={{...h2s,fontSize:"32px"}}>Your spending.</h2>
@@ -335,7 +339,14 @@ function SetupPage({onComplete,user}){
               </div>
             ))}
           </div>
-          {nextBtn(false,()=>setStep(6))}
+          {nextBtn(
+            !data.groceries&&!data.transport&&!data.health&&!data.shopping&&!data.activities&&!data.savings,
+            ()=>setStep(6),
+            "CONTINUE"
+          )}
+          {(!data.groceries&&!data.transport&&!data.health&&!data.shopping&&!data.activities&&!data.savings)&&
+            <p style={{fontSize:"11px",color:"#E8A0A0",marginTop:"8px",textAlign:"center"}}>Please fill in at least one spending amount to continue.</p>
+          }
         </div>}
         {step===6&&<div>
           <h2 style={{...h2s,fontSize:"32px"}}>Your debit orders.</h2>
@@ -683,29 +694,50 @@ export default function App(){
   useEffect(()=>{
     if(authLoading)return;
     if(!authUser){
+      // Not logged in — check localStorage
       const ud=LS.get("ls_userData",null);
       if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
       return;
     }
-    (async()=>{
-      setSyncing(true);
-      const{data:profile}=await supabase.from("profiles").select("*").eq("id",authUser.id).single();
-      if(profile?.data){
-        // ✅ Returning user — skip onboarding entirely
-        setUserData(profile.data);
-        setDebits(profile.debits||[]);
-        setSetup(true);
-      } else {
-        // New user — check localStorage for migration first
+    // Logged in — load from Supabase with a timeout fallback
+    let didFinish=false;
+    const fallbackTimer=setTimeout(()=>{
+      if(!didFinish){
+        // Supabase is slow — fall back to localStorage so app doesn't get stuck
         const ud=LS.get("ls_userData",null);
-        if(ud){setUserData(ud);setDebits(LS.get("ls_debits",[]));setSetup(true);}
-        // else setup=false → show onboarding
+        if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
+        setSyncing(false);
       }
-      const{data:events}=await supabase.from("events").select("*").eq("user_id",authUser.id);
-      if(events&&events.length>0)setBaseBlocks(events.map(e=>e.data));
-      else{const lb=LS.get("ls_blocks",[]);if(lb.length>0)setBaseBlocks(lb);}
-      setSyncing(false);
+    },6000);
+
+    (async()=>{
+      try{
+        setSyncing(true);
+        const{data:profile,error:profileErr}=await supabase.from("profiles").select("*").eq("id",authUser.id).single();
+        if(profile?.data){
+          setUserData(profile.data);
+          setDebits(profile.debits||[]);
+          setSetup(true);
+        } else {
+          // New user — check localStorage for data to migrate
+          const ud=LS.get("ls_userData",null);
+          if(ud){setUserData(ud);setDebits(LS.get("ls_debits",[]));setSetup(true);}
+          // else setup stays false → onboarding shows
+        }
+        const{data:events}=await supabase.from("events").select("*").eq("user_id",authUser.id);
+        if(events&&events.length>0)setBaseBlocks(events.map(e=>e.data));
+        else{const lb=LS.get("ls_blocks",[]);if(lb.length>0)setBaseBlocks(lb);}
+      }catch(err){
+        // Network error — fall back to localStorage
+        const ud=LS.get("ls_userData",null);
+        if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
+      }finally{
+        didFinish=true;
+        clearTimeout(fallbackTimer);
+        setSyncing(false);
+      }
     })();
+    return()=>clearTimeout(fallbackTimer);
   },[authUser,authLoading]);
 
   // ── Persist ──
@@ -780,9 +812,12 @@ export default function App(){
   };
 
   if(authLoading)return(
-    <div style={{minHeight:"100vh",background:"#1A1A1A",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Cormorant Garamond',serif",fontSize:"28px",fontWeight:300,color:"#7C7C7C",letterSpacing:"0.1em"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Jost:wght@300;400;500;600&display=swap');`}</style>
-      LifeSync
+    <div style={{minHeight:"100vh",background:"#1A1A1A",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",gap:"16px"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Jost:wght@300;400;500;600&display=swap');@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}.dot{animation:pulse 1.4s infinite}.dot:nth-child(2){animation-delay:0.2s}.dot:nth-child(3){animation-delay:0.4s}`}</style>
+      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"32px",fontWeight:300,color:"#F8F5F0",letterSpacing:"0.1em"}}>LifeSync</div>
+      <div style={{display:"flex",gap:"6px"}}>
+        {[0,1,2].map(i=><div key={i} className="dot" style={{width:"6px",height:"6px",background:"#7A9E7E",borderRadius:"50%"}}/>)}
+      </div>
     </div>
   );
   if(!authUser)return <AuthPage onAuth={u=>setAuthUser(u)}/>;
