@@ -197,15 +197,26 @@ function SetupPage({onComplete,user}){
 
   const handleComplete=()=>{
     const inc=parseFloat(data.income)||0;
-    const spend={groceries:parseFloat(data.groceries)||0,transport:parseFloat(data.transport)||0,health:parseFloat(data.health)||0,shopping:parseFloat(data.shopping)||0,activities:parseFloat(data.activities)||0};
+    const isMonthly=data.period!=="weekly";
+    // weekly cost = monthly/4 if monthly, or as-is if weekly
+    const weeklyAmt=(key)=>{
+      const raw=parseFloat(data[key])||0;
+      return isMonthly ? raw/4 : raw;
+    };
+    // For budget allocations always use monthly total
+    const monthlyAmt=(key)=>{
+      const raw=parseFloat(data[key])||0;
+      return isMonthly ? raw : raw*4;
+    };
+    const spend={groceries:monthlyAmt("groceries"),transport:monthlyAmt("transport"),health:monthlyAmt("health"),shopping:monthlyAmt("shopping"),activities:monthlyAmt("activities")};
     const debitTotal=data.debits.reduce((s,d)=>s+d.amount,0);
-    const savingsAmt=parseFloat(data.savings)||0;
+    const savingsAmt=monthlyAmt("savings");
     const allocations={};
     BUDGET_CATEGORIES.forEach(cat=>{
       const amt=cat.key==="savings"?savingsAmt:cat.key==="bills"?debitTotal:spend[cat.key]||0;
       allocations[cat.key]=inc>0?Math.round((amt/inc)*100):0;
     });
-    // Build suggested blocks with real dates
+    // Build suggested blocks — always use per-week amounts on the calendar
     const suggestedBlocks=[];let id=1;
     const weekDates=getWeekDates(0);
     data.workDays.forEach(dayLabel=>{
@@ -213,12 +224,12 @@ function SetupPage({onComplete,user}){
       if(di>=0&&weekDates[di])suggestedBlocks.push({id:id++,date:weekDates[di],startHour:parseInt(data.workStart)||9,endHour:17,category:"work",title:"Work",recur:"weekdays",color:"#2D4A3E",hasCost:false,cost:0,budgetCat:"",spent:false,spentAmount:0});
     });
     if(parseFloat(data.health)>0){
-      suggestedBlocks.push({id:id++,date:weekDates[0],startHour:6,endHour:7,category:"gym",title:"Morning Gym",recur:"weekly",color:"#3A3A3A",hasCost:true,cost:parseFloat(data.health)/4,budgetCat:"health",spent:false,spentAmount:0});
+      suggestedBlocks.push({id:id++,date:weekDates[0],startHour:6,endHour:7,category:"gym",title:"Morning Gym",recur:"weekly",color:"#3A3A3A",hasCost:true,cost:weeklyAmt("health"),budgetCat:"health",spent:false,spentAmount:0});
       suggestedBlocks.push({id:id++,date:weekDates[2],startHour:6,endHour:7,category:"gym",title:"Morning Gym",recur:"weekly",color:"#3A3A3A",hasCost:false,cost:0,budgetCat:"",spent:false,spentAmount:0});
     }
-    if(parseFloat(data.groceries)>0)suggestedBlocks.push({id:id++,date:weekDates[5],startHour:9,endHour:11,category:"meal",title:"Grocery Run",recur:"weekly",color:"#C4A882",hasCost:true,cost:parseFloat(data.groceries),budgetCat:"groceries",spent:false,spentAmount:0});
-    if(parseFloat(data.activities)>0)suggestedBlocks.push({id:id++,date:weekDates[6],startHour:10,endHour:13,category:"weekend",title:"Weekend Activity",recur:"weekly",color:"#9B8EA8",hasCost:true,cost:parseFloat(data.activities),budgetCat:"activities",spent:false,spentAmount:0});
-    onComplete({...data,income:inc,allocations,suggestedBlocks});
+    if(parseFloat(data.groceries)>0)suggestedBlocks.push({id:id++,date:weekDates[5],startHour:9,endHour:11,category:"meal",title:"Grocery Run",recur:"weekly",color:"#C4A882",hasCost:true,cost:weeklyAmt("groceries"),budgetCat:"groceries",spent:false,spentAmount:0});
+    if(parseFloat(data.activities)>0)suggestedBlocks.push({id:id++,date:weekDates[6],startHour:10,endHour:13,category:"weekend",title:"Weekend Activity",recur:"weekly",color:"#9B8EA8",hasCost:true,cost:weeklyAmt("activities"),budgetCat:"activities",spent:false,spentAmount:0});
+    onComplete({...data,income:inc,period:isMonthly?"monthly":"weekly",allocations,suggestedBlocks});
   };
 
   const cs={minHeight:"100vh",background:"#1A1A1A",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",padding:"24px 20px"};
@@ -306,10 +317,23 @@ function SetupPage({onComplete,user}){
         </div>}
 
         {step===5&&<div>
-          <h2 style={{...h2s,fontSize:"32px"}}>Your monthly spending.</h2>
-          <p style={subs}>Estimates are fine — you can adjust these anytime in Settings.</p>
+          <h2 style={{...h2s,fontSize:"32px"}}>Your spending.</h2>
+          <p style={subs}>Enter how much you spend — we'll work out the per-event amount automatically.</p>
+
+          {/* Period toggle */}
+          <div style={{marginBottom:"24px"}}>
+            <label style={ls}>ARE THESE AMOUNTS PER WEEK OR PER MONTH?</label>
+            <div style={{display:"flex",background:"#252525",borderRadius:"8px",padding:"3px",gap:"2px"}}>
+              {[["monthly","Monthly total"],["weekly","Weekly total"]].map(([val,label])=>(
+                <button key={val} onClick={()=>upd("period",val)} style={{flex:1,padding:"10px",background:data.period===val?"#F8F5F0":"transparent",border:"none",borderRadius:"6px",color:data.period===val?"#1A1A1A":"#7C7C7C",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontWeight:data.period===val?500:400,letterSpacing:"0.04em",transition:"all 0.2s"}}>{label}</button>
+              ))}
+            </div>
+            {data.period==="monthly"&&<p style={{fontSize:"11px",color:"#7C7C7C",marginTop:"8px",lineHeight:1.6}}>💡 Monthly amounts will be split across the weeks — e.g. R800/month activities = R200 per weekend.</p>}
+            {data.period==="weekly"&&<p style={{fontSize:"11px",color:"#7C7C7C",marginTop:"8px",lineHeight:1.6}}>💡 Weekly amounts are used as-is each week — e.g. R800/week activities = R800 every weekend.</p>}
+          </div>
+
           <div style={{display:"flex",flexDirection:"column",gap:"18px",marginBottom:"28px"}}>
-            {[{key:"groceries",q:"Food & groceries",icon:"🛒",ph:"e.g. 2000"},{key:"transport",q:"Transport (fuel, Uber)",icon:"🚗",ph:"e.g. 1500"},{key:"health",q:"Gym or health",icon:"💪",ph:"e.g. 500"},{key:"shopping",q:"Shopping & clothing",icon:"🛍",ph:"e.g. 800"},{key:"activities",q:"Activities & going out",icon:"🎉",ph:"e.g. 600"},{key:"savings",q:"Monthly savings goal",icon:"💰",ph:"e.g. 1000"}].map(item=>(
+            {[{key:"groceries",q:"Food & groceries",icon:"🛒",ph:"e.g. 2000"},{key:"transport",q:"Transport (fuel, Uber)",icon:"🚗",ph:"e.g. 1500"},{key:"health",q:"Gym or health",icon:"💪",ph:"e.g. 500"},{key:"shopping",q:"Shopping & clothing",icon:"🛍",ph:"e.g. 800"},{key:"activities",q:"Activities & going out",icon:"🎉",ph:"e.g. 600"},{key:"savings",q:"Savings goal",icon:"💰",ph:"e.g. 1000"}].map(item=>(
               <div key={item.key}>
                 <label style={{...ls,display:"flex",alignItems:"center",gap:"6px"}}><span>{item.icon}</span>{item.q}</label>
                 <div style={{display:"flex",alignItems:"center",borderBottom:"1px solid #3A3A3A",paddingBottom:"6px"}}>
@@ -317,7 +341,12 @@ function SetupPage({onComplete,user}){
                   <input value={data[item.key]} onChange={e=>upd(item.key,e.target.value.replace(/[^0-9.]/g,""))} placeholder={item.ph} type="number"
                     style={{flex:1,background:"transparent",border:"none",color:"#F8F5F0",fontSize:"22px",outline:"none",fontFamily:"'Cormorant Garamond',serif",fontWeight:300}}/>
                 </div>
-                {data[item.key]&&parseFloat(data.income)>0&&<div style={{fontSize:"10px",color:"#7C7C7C",marginTop:"3px"}}>{Math.round((parseFloat(data[item.key])/parseFloat(data.income))*100)}% of income</div>}
+                {data[item.key]&&(
+                  <div style={{fontSize:"10px",color:"#7C7C7C",marginTop:"3px",display:"flex",gap:"12px"}}>
+                    {parseFloat(data.income)>0&&<span>{Math.round((parseFloat(data[item.key])/(data.period==="weekly"?parseFloat(data.income)/4:parseFloat(data.income)))*100)}% of {data.period==="weekly"?"weekly":"monthly"} income</span>}
+                    {data.period==="monthly"&&["activities","groceries","health","shopping"].includes(item.key)&&<span style={{color:"#C4A882"}}>= {fmtShort(parseFloat(data[item.key])/4)} per week</span>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -391,11 +420,13 @@ function SettingsPage({userData,setUserData,debits,setDebits,onSignOut,onClose})
 
   const save=()=>{
     const inc=parseFloat(form.income)||0;
+    const isMonthly=(form.period||"monthly")!=="weekly";
+    const monthlyAmt=(key)=>{const raw=parseFloat(form[key])||0;return isMonthly?raw:raw*4;};
     const debitTotal=debits.reduce((s,d)=>s+d.amount,0);
-    const savingsAmt=parseFloat(form.savings)||0;
+    const savingsAmt=monthlyAmt("savings");
     const allocations={};
     BUDGET_CATEGORIES.forEach(cat=>{
-      const spend={groceries:parseFloat(form.groceries)||0,transport:parseFloat(form.transport)||0,health:parseFloat(form.health)||0,shopping:parseFloat(form.shopping)||0,activities:parseFloat(form.activities)||0};
+      const spend={groceries:monthlyAmt("groceries"),transport:monthlyAmt("transport"),health:monthlyAmt("health"),shopping:monthlyAmt("shopping"),activities:monthlyAmt("activities")};
       const amt=cat.key==="savings"?savingsAmt:cat.key==="bills"?debitTotal:spend[cat.key]||0;
       allocations[cat.key]=inc>0?Math.round((amt/inc)*100):0;
     });
@@ -427,6 +458,15 @@ function SettingsPage({userData,setUserData,debits,setDebits,onSignOut,onClose})
         <div style={{marginBottom:"14px"}}>
           <label style={ls}>MONTHLY INCOME (R)</label>
           <input value={form.income||""} onChange={e=>upd("income",e.target.value.replace(/[^0-9.]/g,""))} type="number" style={smInput}/>
+        </div>
+        <div style={{marginBottom:"14px"}}>
+          <label style={ls}>SPENDING AMOUNTS ARE PER</label>
+          <div style={{display:"flex",background:"#F3EEE8",borderRadius:"8px",padding:"3px",gap:"2px"}}>
+            {[["monthly","Month"],["weekly","Week"]].map(([val,label])=>(
+              <button key={val} onClick={()=>upd("period",val)} style={{flex:1,padding:"9px",background:(form.period||"monthly")===val?"#1A1A1A":"transparent",border:"none",borderRadius:"6px",color:(form.period||"monthly")===val?"#F8F5F0":"#7C7C7C",fontSize:"12px",cursor:"pointer",fontFamily:"'Jost',sans-serif",fontWeight:(form.period||"monthly")===val?500:400,transition:"all 0.2s"}}>{label}</button>
+            ))}
+          </div>
+          <p style={{fontSize:"11px",color:"#7C7C7C",marginTop:"6px",lineHeight:1.5}}>{(form.period||"monthly")==="monthly"?"Monthly amounts are divided by 4 for per-week calendar events.":"Weekly amounts are used as-is on each week's calendar."}</p>
         </div>
         <div style={{marginBottom:"14px"}}>
           <label style={ls}>PAY DAY</label>
