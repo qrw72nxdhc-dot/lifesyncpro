@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPA_URL = "https://xyvjnqufsnffosqigbup.supabase.co";
@@ -564,7 +564,7 @@ function SettingsPage({userData,setUserData,debits,setDebits,onSignOut,onClose})
 }
 
 // ── MONTHLY SUMMARY ───────────────────────────────────────────────────────────
-function MonthlySummary({baseBlocks,debits,userData,isMobile}){
+function MonthlySummary({baseBlocks,debits,userData,isMobile,transactions=[]}){
   const now=new Date();
   const[viewYear,setViewYear]=useState(now.getFullYear());
   const[viewMonth,setViewMonth]=useState(now.getMonth());
@@ -587,6 +587,13 @@ function MonthlySummary({baseBlocks,debits,userData,isMobile}){
       }
     });
     debits.forEach(d=>{if(d.budgetCat){estimated[d.budgetCat]=(estimated[d.budgetCat]||0)+d.amount;actual[d.budgetCat]=(actual[d.budgetCat]||0)+d.amount;}});
+    // Add real imported transactions for this month
+    transactions.filter(t=>!t.excluded&&t.category&&t.amount>0).forEach(t=>{
+      const tDate=t.date?new Date(t.date):null;
+      if(tDate&&tDate.getMonth()===month&&tDate.getFullYear()===year){
+        actual[t.category]=(actual[t.category]||0)+t.amount;
+      }
+    });
     const totalEst=Object.values(estimated).reduce((a,b)=>a+b,0);
     const totalAct=Object.values(actual).reduce((a,b)=>a+b,0);
     return{estimated,actual,totalEst,totalAct};
@@ -700,13 +707,285 @@ function MonthlySummary({baseBlocks,debits,userData,isMobile}){
 }
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
+// ── TRANSACTIONS TAB ──────────────────────────────────────────────────────────
+function TransactionsTab({transactions,setTransactions,isMobile,userData}){
+  const[importing,setImporting]=useState(false);
+  const[importError,setImportError]=useState("");
+  const[editingId,setEditingId]=useState(null);
+  const[filterMonth,setFilterMonth]=useState(new Date().getMonth());
+  const[filterYear,setFilterYear]=useState(new Date().getFullYear());
+  const[search,setSearch]=useState("");
+  const fileRef=useRef();
+
+  const income=userData?.income||0;
+
+  // Filter transactions
+  const filtered=transactions.filter(t=>{
+    const d=t.date?new Date(t.date):null;
+    const monthMatch=!d||(d.getMonth()===filterMonth&&d.getFullYear()===filterYear);
+    const searchMatch=!search||t.description?.toLowerCase().includes(search.toLowerCase());
+    return monthMatch&&searchMatch;
+  }).sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const totalSpent=filtered.filter(t=>!t.excluded&&t.amount>0).reduce((s,t)=>s+t.amount,0);
+  const byCategory={};
+  filtered.filter(t=>!t.excluded&&t.category&&t.amount>0).forEach(t=>{
+    byCategory[t.category]=(byCategory[t.category]||0)+t.amount;
+  });
+
+  const handleFile=async(e)=>{
+    const file=e.target.files?.[0];
+    if(!file)return;
+    setImporting(true);setImportError("");
+    try{
+      let textContent="";
+      const ext=file.name.split(".").pop().toLowerCase();
+
+      if(ext==="pdf"){
+        // Load PDF.js from CDN
+        if(!window.pdfjsLib){
+          await new Promise((res,rej)=>{
+            const s=document.createElement("script");
+            s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+            s.onload=res;s.onerror=rej;document.head.appendChild(s);
+          });
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        }
+        const ab=await file.arrayBuffer();
+        const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+        for(let i=1;i<=Math.min(pdf.numPages,20);i++){
+          const page=await pdf.getPage(i);
+          const content=await page.getTextContent();
+          textContent+=content.items.map(item=>item.str).join(" ")+"\n";
+        }
+      } else if(ext==="csv"||ext==="txt"){
+        textContent=await file.text();
+      } else if(ext==="xlsx"||ext==="xls"){
+        // Load SheetJS
+        if(!window.XLSX){
+          await new Promise((res,rej)=>{
+            const s=document.createElement("script");
+            s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+            s.onload=res;s.onerror=rej;document.head.appendChild(s);
+          });
+        }
+        const ab=await file.arrayBuffer();
+        const wb=window.XLSX.read(ab,{type:"array"});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        textContent=window.XLSX.utils.sheet_to_csv(ws);
+      }
+
+      if(!textContent.trim())throw new Error("Could not read file content");
+
+      // Send to Claude for parsing
+      const prompt=`You are a South African bank statement parser. Extract ALL transactions from this bank statement text. For each transaction identify:
+- date (YYYY-MM-DD format, guess year if not clear — assume ${new Date().getFullYear()})
+- description (the merchant/payee name, cleaned up)
+- amount (positive number, debit/expense only — ignore credits/deposits/salary)
+- category: pick ONE from: groceries, transport, entertainment, health, shopping, savings, bills, insurance, activities
+  Examples: Checkers/Woolworths/Pick n Pay = groceries, Uber/Shell/toll = transport, Netflix/DStv = entertainment, Dis-Chem/gym = health, Takealot/clothing = shopping, medical aid/insurance = insurance, electricity/rates = bills, restaurants/bars/events = activities
+
+Return ONLY a valid JSON array of objects with keys: date, description, amount, category. Maximum 100 transactions. No explanation, no markdown, just the JSON array.
+
+Bank statement text:
+${textContent.slice(0,12000)}`;
+
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,messages:[{role:"user",content:prompt}]})
+      });
+      const data=await res.json();
+      const raw=data.content?.map(c=>c.text||"").join("")||"";
+      const clean=raw.replace(/```json|```/g,"").trim();
+      const parsed=JSON.parse(clean);
+
+      if(!Array.isArray(parsed)||parsed.length===0)throw new Error("No transactions found in this file");
+
+      const newTxns=parsed.map((t,i)=>({
+        id:`txn_${Date.now()}_${i}`,
+        date:t.date||todayStr(),
+        description:t.description||"Unknown",
+        amount:Math.abs(parseFloat(t.amount)||0),
+        category:t.category||"shopping",
+        excluded:false,
+        source:file.name,
+        importedAt:new Date().toISOString(),
+      }));
+
+      // Deduplicate against existing transactions
+      const existingKeys=new Set(transactions.map(t=>`${t.date}_${t.description}_${t.amount}`));
+      const unique=newTxns.filter(t=>!existingKeys.has(`${t.date}_${t.description}_${t.amount}`));
+
+      setTransactions(prev=>[...unique,...prev]);
+      setImportError(`✓ Imported ${unique.length} transactions${newTxns.length-unique.length>0?` (${newTxns.length-unique.length} duplicates skipped)`:""}`);
+    }catch(err){
+      setImportError(`Import failed: ${err.message}. Try a CSV export from your bank's internet banking.`);
+    }
+    setImporting(false);
+    e.target.value="";
+  };
+
+  const updateCategory=(id,cat)=>{
+    setTransactions(prev=>prev.map(t=>t.id===id?{...t,category:cat}:t));
+    setEditingId(null);
+  };
+
+  const toggleExclude=(id)=>{
+    setTransactions(prev=>prev.map(t=>t.id===id?{...t,excluded:!t.excluded}:t));
+  };
+
+  const deleteTransaction=(id)=>{
+    setTransactions(prev=>prev.filter(t=>t.id!==id));
+  };
+
+  const clearAll=()=>{
+    if(window.confirm("Delete all imported transactions?"))setTransactions([]);
+  };
+
+  const inp={background:"#F8F5F0",border:"1px solid #E8DDD0",borderRadius:"6px",padding:"8px 12px",color:"#1A1A1A",fontSize:"12px",outline:"none",fontFamily:"'Jost',sans-serif"};
+
+  return(
+    <div style={{padding:isMobile?"16px":"28px",maxWidth:"800px"}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"20px",flexWrap:"wrap",gap:"12px"}}>
+        <div>
+          <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"24px",fontWeight:300,color:"#1A1A1A",marginBottom:"4px"}}>Transactions</h2>
+          <p style={{fontSize:"12px",color:"#7C7C7C"}}>Import your bank statement — PDF, CSV or Excel</p>
+        </div>
+        <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+          {transactions.length>0&&<button onClick={clearAll} style={{...inp,color:"#E8A0A0",cursor:"pointer",border:"1px solid #E8C4C4"}}>CLEAR ALL</button>}
+          <button onClick={()=>fileRef.current?.click()} disabled={importing} style={{padding:"10px 20px",background:"#1A1A1A",border:"none",borderRadius:"6px",color:"#F8F5F0",fontSize:"11px",fontWeight:500,cursor:importing?"not-allowed":"pointer",letterSpacing:"0.08em",fontFamily:"'Jost',sans-serif",opacity:importing?0.6:1}}>
+            {importing?"READING FILE...":"+ IMPORT STATEMENT"}
+          </button>
+          <input ref={fileRef} type="file" accept=".pdf,.csv,.xlsx,.xls,.txt" onChange={handleFile} style={{display:"none"}}/>
+        </div>
+      </div>
+
+      {/* Status message */}
+      {importError&&(
+        <div style={{background:importError.startsWith("✓")?"rgba(122,158,126,0.1)":"rgba(232,160,160,0.1)",border:`1px solid ${importError.startsWith("✓")?"rgba(122,158,126,0.3)":"rgba(232,160,160,0.3)"}`,borderRadius:"8px",padding:"12px 16px",fontSize:"12px",color:importError.startsWith("✓")?"#2D4A3E":"#A05050",marginBottom:"16px",lineHeight:1.5}}>
+          {importError}
+        </div>
+      )}
+
+      {/* How-to if empty */}
+      {transactions.length===0&&!importing&&(
+        <div style={{background:"#FDFCFA",border:"1px dashed #E8DDD0",borderRadius:"12px",padding:"48px 24px",textAlign:"center",marginBottom:"20px"}}>
+          <div style={{fontSize:"32px",marginBottom:"16px"}}>🏦</div>
+          <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"22px",fontWeight:300,color:"#1A1A1A",marginBottom:"8px"}}>Import your bank statement</h3>
+          <p style={{fontSize:"13px",color:"#7C7C7C",lineHeight:1.7,maxWidth:"420px",margin:"0 auto 24px"}}>Upload a PDF, CSV or Excel statement from any SA bank. Claude reads it and automatically categorises every transaction.</p>
+          <div style={{display:"flex",gap:"8px",justifyContent:"center",flexWrap:"wrap",marginBottom:"20px"}}>
+            {["Discovery","FNB","Nedbank","Absa","Standard Bank","Capitec"].map(b=>(
+              <span key={b} style={{padding:"5px 12px",background:"#F3EEE8",borderRadius:"100px",fontSize:"11px",color:"#7C7C7C"}}>{b}</span>
+            ))}
+          </div>
+          <button onClick={()=>fileRef.current?.click()} style={{padding:"13px 32px",background:"#1A1A1A",border:"none",borderRadius:"8px",color:"#F8F5F0",fontSize:"12px",fontWeight:500,cursor:"pointer",letterSpacing:"0.1em",fontFamily:"'Jost',sans-serif"}}>CHOOSE FILE</button>
+          <p style={{fontSize:"11px",color:"#A0A0A0",marginTop:"12px"}}>PDF · CSV · Excel · Your data never leaves your device</p>
+        </div>
+      )}
+
+      {transactions.length>0&&(
+        <>
+          {/* Filters */}
+          <div style={{display:"flex",gap:"10px",marginBottom:"16px",flexWrap:"wrap",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+              <button onClick={()=>{const d=new Date(filterYear,filterMonth-1);setFilterMonth(d.getMonth());setFilterYear(d.getFullYear());}} style={{background:"transparent",border:"1px solid #E8DDD0",borderRadius:"4px",padding:"6px 10px",fontSize:"14px",cursor:"pointer",color:"#7C7C7C"}}>‹</button>
+              <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"16px",color:"#1A1A1A",minWidth:"110px",textAlign:"center"}}>{MONTHS[filterMonth]} {filterYear}</span>
+              <button onClick={()=>{const d=new Date(filterYear,filterMonth+1);setFilterMonth(d.getMonth());setFilterYear(d.getFullYear());}} style={{background:"transparent",border:"1px solid #E8DDD0",borderRadius:"4px",padding:"6px 10px",fontSize:"14px",cursor:"pointer",color:"#7C7C7C"}}>›</button>
+            </div>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search transactions..." style={{...inp,flex:1,minWidth:"160px"}}/>
+          </div>
+
+          {/* Summary cards */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"10px",marginBottom:"20px"}}>
+            {[
+              {label:"TOTAL SPENT",value:fmtShort(totalSpent),color:"#1A1A1A",bg:"#1A1A1A",tc:"#F8F5F0"},
+              {label:"TRANSACTIONS",value:filtered.filter(t=>!t.excluded).length,color:"#F8F5F0",bg:"#3A3A3A",tc:"#F8F5F0"},
+              {label:"VS BUDGET",value:`${income>0?Math.round((totalSpent/income)*100):0}%`,color:totalSpent>income?"#E8A0A0":"#7A9E7E",bg:"#FDFCFA",tc:"#1A1A1A"},
+            ].map(c=>(
+              <div key={c.label} style={{background:c.bg,border:"1px solid #E8DDD0",borderRadius:"8px",padding:"13px"}}>
+                <div style={{fontSize:"9px",color:"#7C7C7C",letterSpacing:"0.1em",marginBottom:"4px"}}>{c.label}</div>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"20px",color:c.tc==="custom"?c.color:c.tc}}>{c.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Category breakdown */}
+          {Object.keys(byCategory).length>0&&(
+            <div style={{background:"#FDFCFA",border:"1px solid #E8DDD0",borderRadius:"8px",padding:"14px",marginBottom:"16px"}}>
+              <div style={{fontSize:"10px",color:"#7C7C7C",letterSpacing:"0.1em",marginBottom:"12px"}}>SPENDING BY CATEGORY</div>
+              <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                {BUDGET_CATEGORIES.filter(c=>byCategory[c.key]).sort((a,b)=>byCategory[b.key]-byCategory[a.key]).map(cat=>{
+                  const amt=byCategory[cat.key]||0;
+                  const pct=totalSpent>0?Math.round((amt/totalSpent)*100):0;
+                  return(
+                    <div key={cat.key} style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                      <div style={{width:"8px",height:"8px",background:cat.color,borderRadius:"50%",flexShrink:0}}/>
+                      <span style={{fontSize:"12px",color:"#1A1A1A",flex:1}}>{cat.label}</span>
+                      <span style={{fontSize:"11px",color:"#7C7C7C",width:"36px",textAlign:"right"}}>{pct}%</span>
+                      <div style={{width:"80px",height:"4px",background:"#E8DDD0",borderRadius:"2px",overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:cat.color,borderRadius:"2px"}}/>
+                      </div>
+                      <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"14px",color:"#1A1A1A",width:"60px",textAlign:"right"}}>{fmtShort(amt)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Transaction list */}
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            {filtered.length===0&&<div style={{textAlign:"center",padding:"32px",color:"#7C7C7C",fontSize:"13px"}}>No transactions found for this month.</div>}
+            {filtered.map(t=>{
+              const cat=BUDGET_CATEGORIES.find(c=>c.key===t.category);
+              return(
+                <div key={t.id} style={{background:"#FDFCFA",border:"1px solid #E8DDD0",borderLeft:`3px solid ${t.excluded?"#E8DDD0":cat?.color||"#7C7C7C"}`,borderRadius:"6px",padding:"10px 14px",opacity:t.excluded?0.45:1,transition:"opacity 0.2s"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"2px"}}>
+                        <span style={{fontSize:"13px",fontWeight:500,color:"#1A1A1A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.description}</span>
+                        {t.excluded&&<span style={{fontSize:"9px",color:"#A0A0A0",background:"#F0EDE8",borderRadius:"4px",padding:"2px 6px",flexShrink:0}}>EXCLUDED</span>}
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                        <span style={{fontSize:"11px",color:"#7C7C7C"}}>{t.date?fmtDisplayDate(t.date):""}</span>
+                        {editingId===t.id?(
+                          <select value={t.category} onChange={e=>updateCategory(t.id,e.target.value)} autoFocus onBlur={()=>setEditingId(null)}
+                            style={{fontSize:"10px",color:"#1A1A1A",background:"#F8F5F0",border:"1px solid #E8DDD0",borderRadius:"4px",padding:"2px 6px",outline:"none",fontFamily:"'Jost',sans-serif",cursor:"pointer"}}>
+                            {BUDGET_CATEGORIES.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}
+                          </select>
+                        ):(
+                          <button onClick={()=>setEditingId(t.id)} style={{fontSize:"10px",color:cat?.color||"#7C7C7C",background:"transparent",border:`1px solid ${cat?.color||"#E8DDD0"}`,borderRadius:"4px",padding:"2px 8px",cursor:"pointer",fontFamily:"'Jost',sans-serif"}}>
+                            {cat?.label||"Uncategorised"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:"8px",flexShrink:0}}>
+                      <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"16px",color:t.excluded?"#A0A0A0":"#1A1A1A"}}>{fmtCurrency(t.amount)}</span>
+                      <button onClick={()=>toggleExclude(t.id)} title={t.excluded?"Include":"Exclude"} style={{background:"transparent",border:"1px solid #E8DDD0",borderRadius:"4px",padding:"4px 8px",fontSize:"10px",cursor:"pointer",color:"#7C7C7C",fontFamily:"'Jost',sans-serif"}}>{t.excluded?"INCLUDE":"EXCLUDE"}</button>
+                      <button onClick={()=>deleteTransaction(t.id)} style={{background:"transparent",border:"none",color:"#E8A0A0",fontSize:"16px",cursor:"pointer",padding:"0 2px"}}>×</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App(){
   const[authUser,setAuthUser]=useState(null);
   const[authLoading,setAuthLoading]=useState(true);
   const[setup,setSetup]=useState(false);
   const[userData,setUserData]=useState(null);
-  const[baseBlocks,setBaseBlocks]=useState([]); // master list of base events
+  const[baseBlocks,setBaseBlocks]=useState([]);
   const[debits,setDebits]=useState([]);
+  const[transactions,setTransactions]=useState([]); // imported bank transactions
   const[tab,setTab]=useState("calendar");
   const[calView,setCalView]=useState("week");
   const[weekOffset,setWeekOffset]=useState(0);
@@ -741,7 +1020,7 @@ export default function App(){
     if(authLoading)return;
     if(!authUser){
       const ud=LS.get("ls_userData",null);
-      if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
+      if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setTransactions(LS.get("ls_transactions",[]));setSetup(true);}
       return;
     }
 
@@ -812,6 +1091,7 @@ export default function App(){
   useEffect(()=>{if(userData)LS.set("ls_userData",userData);},[userData]);
   useEffect(()=>{LS.set("ls_blocks",baseBlocks);},[baseBlocks]);
   useEffect(()=>{LS.set("ls_debits",debits);},[debits]);
+  useEffect(()=>{LS.set("ls_transactions",transactions);},[transactions]);
 
   useEffect(()=>{
     if(!authUser||!userData)return;
@@ -898,11 +1178,20 @@ export default function App(){
   // Expand recurring events for current view
   const visibleBlocks=expandRecurring(baseBlocks,weekDates);
 
-  // Budget totals use the current month's expanded events
-  const currMonthEvents=getMonthEvents(baseBlocks,new Date().getFullYear(),new Date().getMonth());
+  // Budget totals use the current month's expanded events + imported transactions
+  const currMonth=new Date().getMonth();const currYear=new Date().getFullYear();
+  const currMonthEvents=getMonthEvents(baseBlocks,currYear,currMonth);
   const spentByCategory={};BUDGET_CATEGORIES.forEach(c=>{spentByCategory[c.key]=0;});
   currMonthEvents.forEach(b=>{if(b.hasCost&&b.budgetCat&&b.cost)spentByCategory[b.budgetCat]=(spentByCategory[b.budgetCat]||0)+b.cost;});
   debits.forEach(d=>{if(d.budgetCat)spentByCategory[d.budgetCat]=(spentByCategory[d.budgetCat]||0)+d.amount;});
+  // Add real transactions for current month
+  transactions.forEach(t=>{
+    if(!t.category||t.excluded)return;
+    const tDate=t.date?new Date(t.date):null;
+    if(tDate&&tDate.getMonth()===currMonth&&tDate.getFullYear()===currYear){
+      spentByCategory[t.category]=(spentByCategory[t.category]||0)+(t.amount||0);
+    }
+  });
   const totalSpent=Object.values(spentByCategory).reduce((a,b)=>a+b,0);
   const totalRemaining=income-totalSpent;
   const debitTotal=debits.reduce((s,d)=>s+d.amount,0);
@@ -1078,8 +1367,8 @@ export default function App(){
     );
   };
 
-  const TABS=isMobile?[["calendar","📅","Cal"],["budget","💰","Budget"],["summary","📊","Summary"],["ai","✨","AI"]]:
-    [["calendar","CALENDAR"],["budget","BUDGET"],["summary","SUMMARY"],["debits","DEBITS"],["ai","AI ADVICE"]];
+  const TABS=isMobile?[["calendar","📅","Cal"],["budget","💰","Budget"],["summary","📊","Summary"],["txn","🏦","Transactions"],["ai","✨","AI"]]:
+    [["calendar","CALENDAR"],["budget","BUDGET"],["summary","SUMMARY"],["txn","TRANSACTIONS"],["debits","DEBITS"],["ai","AI ADVICE"]];
 
   return(
     <div style={{minHeight:"100vh",background:"#F8F5F0",fontFamily:"'Jost',sans-serif",color:"#1A1A1A"}}>
@@ -1277,7 +1566,10 @@ export default function App(){
         )}
 
         {/* SUMMARY */}
-        {tab==="summary"&&<MonthlySummary baseBlocks={baseBlocks} debits={debits} userData={userData} isMobile={isMobile}/>}
+        {tab==="summary"&&<MonthlySummary baseBlocks={baseBlocks} debits={debits} userData={userData} isMobile={isMobile} transactions={transactions}/>}
+
+        {/* TRANSACTIONS */}
+        {tab==="txn"&&<TransactionsTab transactions={transactions} setTransactions={setTransactions} isMobile={isMobile} userData={userData}/>}
 
         {/* DEBITS — desktop only tab */}
         {tab==="debits"&&!isMobile&&(
