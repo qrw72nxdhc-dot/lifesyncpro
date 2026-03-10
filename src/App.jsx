@@ -741,47 +741,69 @@ export default function App(){
   useEffect(()=>{
     if(authLoading)return;
     if(!authUser){
-      // Not logged in — check localStorage
       const ud=LS.get("ls_userData",null);
       if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
       return;
     }
-    // Logged in — load from Supabase with a timeout fallback
+
     let didFinish=false;
+    // After 8 seconds, force the app open no matter what
     const fallbackTimer=setTimeout(()=>{
       if(!didFinish){
-        // Supabase is slow — fall back to localStorage so app doesn't get stuck
         const ud=LS.get("ls_userData",null);
-        if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
+        if(ud){
+          setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);
+        } else {
+          // No local data either — send to onboarding
+          setSetup(false);
+        }
         setSyncing(false);
+        didFinish=true;
       }
-    },6000);
+    },8000);
 
     (async()=>{
       try{
         setSyncing(true);
         const{data:profile,error:profileErr}=await supabase.from("profiles").select("*").eq("id",authUser.id).single();
-        if(profile?.data){
-          setUserData(profile.data);
-          setDebits(profile.debits||[]);
-          setSetup(true);
+
+        if(profile){
+          // Profile exists — extract data however it was stored
+          const ud=profile.data||profile;
+          // Make sure it has the minimum fields to be valid
+          if(ud&&(ud.name||ud.income)){
+            setUserData(ud);
+            setDebits(profile.debits||ud.debits||[]);
+            setSetup(true);
+          } else {
+            // Profile row exists but data is empty/malformed — check localStorage
+            const localUd=LS.get("ls_userData",null);
+            if(localUd){setUserData(localUd);setDebits(LS.get("ls_debits",[]));setSetup(true);}
+            // else → onboarding
+          }
         } else {
-          // New user — check localStorage for data to migrate
-          const ud=LS.get("ls_userData",null);
-          if(ud){setUserData(ud);setDebits(LS.get("ls_debits",[]));setSetup(true);}
-          // else setup stays false → onboarding shows
+          // No profile row yet — check localStorage for existing data
+          const localUd=LS.get("ls_userData",null);
+          if(localUd){setUserData(localUd);setDebits(LS.get("ls_debits",[]));setSetup(true);}
+          // else → onboarding for new user
         }
+
+        // Load events
         const{data:events}=await supabase.from("events").select("*").eq("user_id",authUser.id);
         if(events&&events.length>0)setBaseBlocks(events.map(e=>e.data));
         else{const lb=LS.get("ls_blocks",[]);if(lb.length>0)setBaseBlocks(lb);}
+
       }catch(err){
-        // Network error — fall back to localStorage
+        console.error("Load error:",err);
+        // Any error — fall back to localStorage
         const ud=LS.get("ls_userData",null);
         if(ud){setUserData(ud);setBaseBlocks(LS.get("ls_blocks",[]));setDebits(LS.get("ls_debits",[]));setSetup(true);}
       }finally{
-        didFinish=true;
-        clearTimeout(fallbackTimer);
-        setSyncing(false);
+        if(!didFinish){
+          didFinish=true;
+          clearTimeout(fallbackTimer);
+          setSyncing(false);
+        }
       }
     })();
     return()=>clearTimeout(fallbackTimer);
@@ -858,13 +880,14 @@ export default function App(){
     setAiLoading(false);
   };
 
-  if(authLoading)return(
+  if(authLoading||( authUser&&!setup&&syncing))return(
     <div style={{minHeight:"100vh",background:"#1A1A1A",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Jost',sans-serif",gap:"16px"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Jost:wght@300;400;500;600&display=swap');@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}.dot{animation:pulse 1.4s infinite}.dot:nth-child(2){animation-delay:0.2s}.dot:nth-child(3){animation-delay:0.4s}`}</style>
       <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"32px",fontWeight:300,color:"#F8F5F0",letterSpacing:"0.1em"}}>LifeSync</div>
       <div style={{display:"flex",gap:"6px"}}>
         {[0,1,2].map(i=><div key={i} className="dot" style={{width:"6px",height:"6px",background:"#7A9E7E",borderRadius:"50%"}}/>)}
       </div>
+      <p style={{fontSize:"11px",color:"#4A4A4A",letterSpacing:"0.08em",marginTop:"4px"}}>Loading your data...</p>
     </div>
   );
   if(!authUser)return <AuthPage onAuth={u=>setAuthUser(u)}/>;
