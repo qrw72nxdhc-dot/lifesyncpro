@@ -63,13 +63,12 @@ const expandRecurring=(baseBlocks,weekDates)=>{
     const d=parseDate(dateStr);
     const dow=(d.getDay()+6)%7; // 0=Mon..6=Sun
     baseBlocks.forEach(block=>{
-      // Check if this date is an exception (individually edited occurrence)
-      const exceptions=block.exceptions||[];
+      // Safety: exceptions must be an array, overrides must be an object
+      const exceptions=Array.isArray(block.exceptions)?block.exceptions:[];
+      const overrides=(block.overrides&&typeof block.overrides==="object"&&!Array.isArray(block.overrides))?block.overrides:{};
       if(exceptions.includes(dateStr)){
-        // If there's a specific override for this date, find it
-        const override=block.overrides?.[dateStr];
+        const override=overrides[dateStr];
         if(override)result.push({...block,...override,date:dateStr,_baseId:block.id,_isOverride:true});
-        // else it was deleted for this date, skip
         return;
       }
       const originDate=parseDate(block.date);
@@ -263,7 +262,7 @@ function SetupPage({onComplete,user}){
     const weekDates=getWeekDates(0);
     data.workDays.forEach(dayLabel=>{
       const di=DAYS.indexOf(dayLabel);
-      if(di>=0&&weekDates[di])suggestedBlocks.push({id:id++,date:weekDates[di],startHour:parseInt(data.workStart)||9,endHour:17,category:"work",title:"Work",recur:"weekdays",color:"#2D4A3E",hasCost:false,cost:0,budgetCat:"",spent:false,spentAmount:0,exceptions:{},overrides:{}});
+      if(di>=0&&weekDates[di])suggestedBlocks.push({id:id++,date:weekDates[di],startHour:parseInt(data.workStart)||9,endHour:17,category:"work",title:"Work",recur:"weekdays",color:"#2D4A3E",hasCost:false,cost:0,budgetCat:"",spent:false,spentAmount:0,exceptions:[],overrides:{}});
     });
     if(parseFloat(data.health)>0){
       suggestedBlocks.push({id:id++,date:weekDates[0],startHour:6,endHour:7,category:"gym",title:"Morning Gym",recur:"weekly",color:"#3A3A3A",hasCost:true,cost:weeklyAmt("health"),budgetCat:"health",spent:false,spentAmount:0,exceptions:[],overrides:{}});
@@ -845,7 +844,7 @@ export default function App(){
       // Add exception + override for this date only
       setBaseBlocks(prev=>prev.map(b=>b.id===pendingSave.baseId?{
         ...b,
-        exceptions:[...(b.exceptions||[]),pendingSave.date],
+        exceptions:[...(Array.isArray(b.exceptions)?b.exceptions:[]),pendingSave.date],
         overrides:{...(b.overrides||{}),[pendingSave.date]:{...pendingSave.form,cost:pendingSave.form.hasCost?parseFloat(pendingSave.form.cost)||0:0}}
       }:b));
       setModal(null);setRecurModal(null);setPendingSave(null);
@@ -945,7 +944,7 @@ export default function App(){
   const deleteBlock=(block)=>{
     if(block._isRecurring){
       // Just hide this one occurrence
-      setBaseBlocks(prev=>prev.map(b=>b.id===block._baseId?{...b,exceptions:[...(b.exceptions||[]),block.date]}:b));
+      setBaseBlocks(prev=>prev.map(b=>b.id===block._baseId?{...b,exceptions:[...(Array.isArray(b.exceptions)?b.exceptions:[]),block.date]}:b));
       showToast("Occurrence removed ✓");
     } else {
       setBaseBlocks(prev=>prev.filter(b=>b.id!==(block._baseId||block.id)));
