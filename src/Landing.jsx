@@ -349,7 +349,7 @@ export default function Landing() {
         <div className="ls-nav-right">
           <button className="ls-nav-link" onClick={() => scrollTo("ls-features")}>FEATURES</button>
           <button className="ls-nav-link" onClick={() => scrollTo("ls-how")}>HOW IT WORKS</button>
-          <button className="ls-nav-cta" onClick={goToApp}>OPEN APP →</button>
+          <button className="ls-nav-cta" onClick={goToApp}>GET STARTED FREE</button>
         </div>
       </nav>
 
